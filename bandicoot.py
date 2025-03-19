@@ -27,7 +27,8 @@ CREATE TABLE IF NOT EXISTS crash_logs (
     process_name TEXT,
     exception_type TEXT,
     termination_reason TEXT,
-    file_path TEXT UNIQUE
+    file_path TEXT UNIQUE,
+    notation TEXT DEFAULT ''
 );
 """
 
@@ -43,6 +44,20 @@ SELECT file_path FROM crash_logs;
 COUNT_LOGS_SQL = """
 SELECT COUNT(*) FROM crash_logs;
 """
+
+def ensure_notation_field(db_path):
+    """Ensures that the notation field exists in the database."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(crash_logs);")
+    columns = [row[1] for row in cursor.fetchall()]
+    
+    if "notation" not in columns:
+        print("Adding 'notation' field to crash_logs table...")
+        cursor.execute("ALTER TABLE crash_logs ADD COLUMN notation TEXT DEFAULT '';")
+        conn.commit()
+    
+    conn.close()
 
 def ask_user_first_run():
     """Prompts user if this is their first time running Bandicoot."""
@@ -94,6 +109,8 @@ def setup_bandicoot_directory(db_path):
         conn.close()
         os.chmod(db_path, 0o600)  # Restrict access to user only
         print("✅ Database initialized with correct permissions.")
+
+    ensure_notation_field(db_path)
 
 def check_permissions():
     """Checks if system crash logs are accessible; requests sudo if needed."""
