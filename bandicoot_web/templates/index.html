@@ -24,7 +24,7 @@
         <tbody>
             {% for log in logs %}
             <tr>
-                <td>{{ log.id }}</td>
+                <td><a href="{{ url_for('view_log', log_id=log.id) }}">{{ log.id }}</a></td>
                 <td>{{ log.crash_time }}</td>
                 <td>{{ log.process_name }}</td>
                 <td>{{ log.exception_type }}</td>
