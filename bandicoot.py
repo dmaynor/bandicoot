@@ -5,13 +5,19 @@ import glob
 import re
 import sqlite3
 import pandas as pd
+import sys
+import subprocess
+import argparse
+import getpass
 
-# Paths to crash logs
-USER_CRASH_LOGS = os.path.expanduser("~/Library/Logs/DiagnosticReports/*.crash")
-SYSTEM_CRASH_LOGS = "/Library/Logs/DiagnosticReports/*.crash"
+# Default Bandicoot database directory
+DEFAULT_DB_DIR = os.path.expanduser("~/.bandicoot")
+DEFAULT_DB_PATH = os.path.join(DEFAULT_DB_DIR, "crash_logs.db")
 
-# Database file
-DB_PATH = os.path.expanduser("~/crash_logs.db")
+# Log file extensions to scan
+LOG_EXTENSIONS = ["crash", "diag", "ips", "shutdownStall"]
+USER_CRASH_LOGS = [os.path.expanduser(f"~/Library/Logs/DiagnosticReports/*.{ext}") for ext in LOG_EXTENSIONS]
+SYSTEM_CRASH_LOGS = [f"/Library/Logs/DiagnosticReports/*.{ext}" for ext in LOG_EXTENSIONS]
 
 # SQL Statements
 CREATE_TABLE_SQL = """
@@ -38,23 +44,131 @@ COUNT_LOGS_SQL = """
 SELECT COUNT(*) FROM crash_logs;
 """
 
-# Function to extract key crash details
-def parse_crash_log(file_path):
+def ask_user_first_run():
+    """Prompts user if this is their first time running Bandicoot."""
+    response = input("Bandicoot directory not found. Is this your first time running? (yes/no): ").strip().lower()
+    return response in ["y", "yes"]
+
+def wipe_database(db_path):
+    """Deletes the existing database and reinitializes it."""
+    db_dir = os.path.dirname(db_path)
+    
+    if os.path.exists(db_path):
+        print(f"Wiping existing database at {db_path}...")
+        os.remove(db_path)
+
+    if os.path.exists(db_dir):
+        print(f"Removing old Bandicoot directory: {db_dir}")
+        os.rmdir(db_dir)  # Remove if empty
+
+    # Proceed with fresh setup
+    setup_bandicoot_directory(db_path)
+
+def setup_bandicoot_directory(db_path):
+    """Sets up the Bandicoot directory and database with proper ownership, avoiding dangerous locations."""
+    db_dir = os.path.dirname(db_path)
+
+    # Prevent creating the database in root or root's home directory
+    if os.geteuid() == 0 or db_dir in ["/", "/root"]:
+        response = input(f"⚠️ WARNING: You are about to create the database in {db_dir}. Are you sure? (yes/no): ").strip().lower()
+        if response not in ["y", "yes"]:
+            print("❌ Database creation aborted for safety.")
+            sys.exit(1)
+
+    if not os.path.exists(db_dir):
+        if ask_user_first_run():
+            print(f"Creating Bandicoot directory at {db_dir}...")
+            os.makedirs(db_dir, exist_ok=True)
+            os.chmod(db_dir, 0o700)  # Ensure only the user can access it
+            print("✅ Directory created with correct permissions.")
+        else:
+            print("❌ Error: Please provide a Bandicoot database path with --db-path")
+            sys.exit(1)
+    
+    if not os.path.exists(db_path):
+        print(f"Creating Bandicoot database at {db_path}...")
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute(CREATE_TABLE_SQL)
+        conn.commit()
+        conn.close()
+        os.chmod(db_path, 0o600)  # Restrict access to user only
+        print("✅ Database initialized with correct permissions.")
+
+def check_permissions():
+    """Checks if system crash logs are accessible; requests sudo if needed."""
+    test_files = sum([glob.glob(path) for path in SYSTEM_CRASH_LOGS], [])
+    
+    if not test_files:
+        print("No system crash logs found. Skipping permission check.")
+        return True
+
+    test_file = test_files[0]
+    
+    if os.access(test_file, os.R_OK):
+        return True  # Has permission
+
+    print(f"Permission denied for {test_file}. Requesting superuser access...")
+    return False
+
+def request_sudo():
+    """Re-runs the script with sudo privileges if needed."""
+    if os.geteuid() != 0:
+        print("Re-running with superuser privileges...")
+        subprocess.call(["sudo", sys.executable] + sys.argv)
+        sys.exit()
+
+def parse_crash_log(file_path, verbose=False):
+    """
+    Extracts crash log details using multiple regex patterns for different log formats.
+    If verbose is True, prints each line before parsing it.
+    """
     try:
         with open(file_path, "r", errors="ignore") as f:
-            log_content = f.read()
+            lines = f.readlines()
         
-        # Extract key fields
-        crash_time = re.search(r"Date/Time:\s+(.+)", log_content)
-        process_name = re.search(r"Process:\s+(\S+)", log_content)
-        exception_type = re.search(r"Exception Type:\s+(.+)", log_content)
-        termination_reason = re.search(r"Termination Reason:\s+(.+)", log_content)
+        crash_time = None
+        process_name = None
+        exception_type = None
+        termination_reason = None
+        
+        for line in lines:
+            if verbose:
+                print(f"Parsing line: {line.strip()}")
+
+            if not crash_time:
+                match = re.search(r"(Date/Time|Timestamp|Time):\s+(.+)", line) or \
+                        re.search(r"Date:\s+(.+)", line) or \
+                        re.search(r"Timestamp:\s+(.+)", line)
+                if match:
+                    crash_time = match.group(2)
+
+            if not process_name:
+                match = re.search(r"(Process|Executable|Application):\s+([\w\.\-]+)", line) or \
+                        re.search(r"Process Name:\s+(.+)", line) or \
+                        re.search(r"Command:\s+([\w\.\-]+)", line)
+                if match:
+                    process_name = match.group(2)
+
+            if not exception_type:
+                match = re.search(r"(Exception Type|Fault Type|Error Type):\s+(.+)", line) or \
+                        re.search(r"Error Code:\s+(.+)", line) or \
+                        re.search(r"Signal:\s+(.+)", line)
+                if match:
+                    exception_type = match.group(2)
+
+            if not termination_reason:
+                match = re.search(r"(Termination Reason|Cause|Reason):\s+(.+)", line) or \
+                        re.search(r"Exit Reason:\s+(.+)", line) or \
+                        re.search(r"Crash Reason:\s+(.+)", line)
+                if match:
+                    termination_reason = match.group(2)
 
         return {
-            "crash_time": crash_time.group(1) if crash_time else "Unknown",
-            "process_name": process_name.group(1) if process_name else "Unknown",
-            "exception_type": exception_type.group(1) if exception_type else "Unknown",
-            "termination_reason": termination_reason.group(1) if termination_reason else "Unknown",
+            "crash_time": crash_time if crash_time else "Unknown",
+            "process_name": process_name if process_name else "Unknown",
+            "exception_type": exception_type if exception_type else "Unknown",
+            "termination_reason": termination_reason if termination_reason else "Unknown",
             "file_path": file_path
         }
     
@@ -67,15 +181,12 @@ def parse_crash_log(file_path):
             "file_path": file_path
         }
 
-# Function to check and insert logs into SQLite
-def store_crash_logs(logs):
-    conn = sqlite3.connect(DB_PATH)
+def store_crash_logs(db_path, logs):
+    """Stores crash logs in SQLite, avoiding duplicates."""
+    conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
     
-    # Create table if it doesn't exist
     cursor.execute(CREATE_TABLE_SQL)
-
-    # Fetch existing logs to avoid duplicates
     cursor.execute(CHECK_EXISTING_SQL)
     existing_files = {row[0] for row in cursor.fetchall()}
     
@@ -83,37 +194,54 @@ def store_crash_logs(logs):
     
     for log in logs:
         if log["file_path"] not in existing_files:
-            cursor.execute(INSERT_LOG_SQL, (log["crash_time"], log["process_name"], log["exception_type"], log["termination_reason"], log["file_path"]))
+            cursor.execute(
+                INSERT_LOG_SQL,
+                (
+                    log["crash_time"],
+                    log["process_name"],
+                    log["exception_type"],
+                    log.get("termination_reason", "Unknown"),
+                    log["file_path"],
+                )
+            )
             new_logs.append(log)
 
-    # Commit and close
     conn.commit()
-
-    # Get total logs in the database
     cursor.execute(COUNT_LOGS_SQL)
     total_logs = cursor.fetchone()[0]
 
     conn.close()
     return total_logs, new_logs
 
-# Collect all crash logs
-all_logs = glob.glob(USER_CRASH_LOGS) + glob.glob(SYSTEM_CRASH_LOGS)
+def main():
+    """Main function to parse crash logs and store them in SQLite."""
+    parser = argparse.ArgumentParser(description="Bandicoot - macOS Crash Log Analyzer")
+    parser.add_argument("--db-path", type=str, help="Path to the Bandicoot SQLite database")
+    parser.add_argument("--wipe", action="store_true", help="Wipe the existing database and start fresh")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose mode for detailed parsing output")
 
-# Parse logs
-parsed_logs = [parse_crash_log(log) for log in all_logs]
+    args = parser.parse_args()
+    db_path = args.db_path if args.db_path else DEFAULT_DB_PATH
 
-# Store logs in database and check for new ones
-total_logs, new_logs = store_crash_logs(parsed_logs)
+    if args.wipe:
+        wipe_database(db_path)
 
-# Print summary
-print(f"Total crash logs in database: {total_logs}")
-if new_logs:
-    print(f"New crash logs added ({len(new_logs)}):")
-    for log in new_logs:
-        print(f"- {log['crash_time']} | {log['process_name']} | {log['exception_type']}")
+    setup_bandicoot_directory(db_path)
 
-# Convert new logs to DataFrame and display
-df = pd.DataFrame(new_logs)
-if not df.empty:
-    import ace_tools as tools
-    tools.display_dataframe_to_user(name="New Crash Logs", dataframe=df)
+    if not check_permissions():
+        request_sudo()
+
+    all_logs = sum([glob.glob(path) for path in USER_CRASH_LOGS + SYSTEM_CRASH_LOGS], [])
+
+    parsed_logs = [parse_crash_log(log, verbose=args.verbose) for log in all_logs]
+
+    total_logs, new_logs = store_crash_logs(db_path, parsed_logs)
+
+    print(f"Total crash logs in database: {total_logs}")
+    if new_logs:
+        print(f"New crash logs added ({len(new_logs)}):")
+        for log in new_logs:
+            print(f"- {log['crash_time']} | {log['process_name']} | {log['exception_type']}")
+
+if __name__ == "__main__":
+    main()
