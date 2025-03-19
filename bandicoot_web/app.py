@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
+"""
+Author: David Maynor (dmaynor@gmail.com)
+Description: This project contains a mixture of Python and HTML code. The Python section 
+handles the backend logic, while the HTML section is used for rendering the frontend. 
 
+"""
 from flask import Flask, render_template, request, redirect, url_for
 import sqlite3
 import os
