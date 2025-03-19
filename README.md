@@ -1,7 +1,7 @@
 # Bandicoot - macOS Crash Log Analyzer
 
 ## Overview
-Bandicoot is a macOS crash log analysis tool that:
+Bandicoot is a macOS crash collector, viewer, and one day analyzer, that:
 - Scans system and user crash logs (`.crash`, `.diag`, `.ips`, `.shutdownStall`).
 - Extracts key details (process name, exception type, termination reason).
 - Stores logs in an SQLite database.
