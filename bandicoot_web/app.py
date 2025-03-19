@@ -37,5 +37,17 @@ def update():
 
     return redirect(url_for("index"))
 
+@app.route("/log/<int:log_id>")
+def view_log(log_id):
+    """Show the full crash log from the database."""
+    conn = get_db_connection()
+    log = conn.execute("SELECT * FROM crash_logs WHERE id = ?", (log_id,)).fetchone()
+    conn.close()
+    
+    if log is None:
+        return "Log not found", 404
+
+    return render_template("log.html", log=log)
+
 if __name__ == "__main__":
     app.run(debug=True)
