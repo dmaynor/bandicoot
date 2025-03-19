@@ -122,7 +122,9 @@ def parse_crash_log(file_path, verbose=False):
     """
     Extracts crash log details using multiple regex patterns for different log formats.
     If verbose is True, prints each line before parsing it.
+    Safeguards against 'no such group' errors by checking the number of groups first.
     """
+
     try:
         with open(file_path, "r", errors="ignore") as f:
             lines = f.readlines()
@@ -136,33 +138,37 @@ def parse_crash_log(file_path, verbose=False):
             if verbose:
                 print(f"Parsing line: {line.strip()}")
 
+            # 1. Crash time
             if not crash_time:
-                match = re.search(r"(Date/Time|Timestamp|Time):\s+(.+)", line) or \
-                        re.search(r"Date:\s+(.+)", line) or \
-                        re.search(r"Timestamp:\s+(.+)", line)
-                if match:
-                    crash_time = match.group(2)
+                m = (re.search(r"(Date/Time|Timestamp|Time):\s+(.+)", line)
+                     or re.search(r"Date:\s+(.+)", line)
+                     or re.search(r"Timestamp:\s+(.+)", line))
+                if m and len(m.groups()) >= 2:
+                    crash_time = m.group(2)
 
+            # 2. Process name (allow spaces)
             if not process_name:
-                match = re.search(r"(Process|Executable|Application):\s+([\w\.\-]+)", line) or \
-                        re.search(r"Process Name:\s+(.+)", line) or \
-                        re.search(r"Command:\s+([\w\.\-]+)", line)
-                if match:
-                    process_name = match.group(2)
+                m = (re.search(r"(Process|Executable|Application):\s+(.*)", line)
+                     or re.search(r"Process Name:\s+(.+)", line)
+                     or re.search(r"Command:\s+(.*)", line))
+                if m and len(m.groups()) >= 2:
+                    process_name = m.group(2).strip()
 
+            # 3. Exception type
             if not exception_type:
-                match = re.search(r"(Exception Type|Fault Type|Error Type):\s+(.+)", line) or \
-                        re.search(r"Error Code:\s+(.+)", line) or \
-                        re.search(r"Signal:\s+(.+)", line)
-                if match:
-                    exception_type = match.group(2)
+                m = (re.search(r"(Exception Type|Fault Type|Error Type):\s+(.+)", line)
+                     or re.search(r"Error Code:\s+(.+)", line)
+                     or re.search(r"Signal:\s+(.+)", line))
+                if m and len(m.groups()) >= 2:
+                    exception_type = m.group(2).strip()
 
+            # 4. Termination reason
             if not termination_reason:
-                match = re.search(r"(Termination Reason|Cause|Reason):\s+(.+)", line) or \
-                        re.search(r"Exit Reason:\s+(.+)", line) or \
-                        re.search(r"Crash Reason:\s+(.+)", line)
-                if match:
-                    termination_reason = match.group(2)
+                m = (re.search(r"(Termination Reason|Cause|Reason):\s+(.+)", line)
+                     or re.search(r"Exit Reason:\s+(.+)", line)
+                     or re.search(r"Crash Reason:\s+(.+)", line))
+                if m and len(m.groups()) >= 2:
+                    termination_reason = m.group(2).strip()
 
         return {
             "crash_time": crash_time if crash_time else "Unknown",
@@ -171,7 +177,7 @@ def parse_crash_log(file_path, verbose=False):
             "termination_reason": termination_reason if termination_reason else "Unknown",
             "file_path": file_path
         }
-    
+
     except Exception as e:
         return {
             "crash_time": "Error",
