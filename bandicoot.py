@@ -28,13 +28,14 @@ CREATE TABLE IF NOT EXISTS crash_logs (
     exception_type TEXT,
     termination_reason TEXT,
     file_path TEXT UNIQUE,
-    notation TEXT DEFAULT ''
+    notation TEXT DEFAULT '',
+    log_content TEXT
 );
 """
 
 INSERT_LOG_SQL = """
-INSERT INTO crash_logs (crash_time, process_name, exception_type, termination_reason, file_path)
-VALUES (?, ?, ?, ?, ?);
+INSERT INTO crash_logs (crash_time, process_name, exception_type, termination_reason, file_path, log_content)
+VALUES (?, ?, ?, ?, ?, ?);
 """
 
 CHECK_EXISTING_SQL = """
@@ -44,6 +45,20 @@ SELECT file_path FROM crash_logs;
 COUNT_LOGS_SQL = """
 SELECT COUNT(*) FROM crash_logs;
 """
+
+def ensure_log_content_field(db_path):
+    """Ensures that the log_content field exists in the database."""
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    cursor.execute("PRAGMA table_info(crash_logs);")
+    columns = [row[1] for row in cursor.fetchall()]
+    
+    if "log_content" not in columns:
+        print("Adding 'log_content' field to crash_logs table...")
+        cursor.execute("ALTER TABLE crash_logs ADD COLUMN log_content TEXT;")
+        conn.commit()
+    
+    conn.close()
 
 def ensure_notation_field(db_path):
     """Ensures that the notation field exists in the database."""
@@ -111,6 +126,7 @@ def setup_bandicoot_directory(db_path):
         print("✅ Database initialized with correct permissions.")
 
     ensure_notation_field(db_path)
+    ensure_log_content_field(db_path)
 
 def check_permissions():
     """Checks if system crash logs are accessible; requests sudo if needed."""
@@ -137,62 +153,51 @@ def request_sudo():
 
 def parse_crash_log(file_path, verbose=False):
     """
-    Extracts crash log details using multiple regex patterns for different log formats.
+    Extracts key details and stores the full log content.
     If verbose is True, prints each line before parsing it.
     Safeguards against 'no such group' errors by checking the number of groups first.
     """
 
     try:
         with open(file_path, "r", errors="ignore") as f:
-            lines = f.readlines()
+            log_content = f.read()
         
         crash_time = None
         process_name = None
         exception_type = None
         termination_reason = None
-        
-        for line in lines:
+
+        for line in log_content.splitlines():
             if verbose:
                 print(f"Parsing line: {line.strip()}")
 
-            # 1. Crash time
             if not crash_time:
-                m = (re.search(r"(Date/Time|Timestamp|Time):\s+(.+)", line)
-                     or re.search(r"Date:\s+(.+)", line)
-                     or re.search(r"Timestamp:\s+(.+)", line))
-                if m and len(m.groups()) >= 2:
-                    crash_time = m.group(2)
+                match = re.search(r"(Date/Time|Timestamp|Time):\s+(.+)", line)
+                if match:
+                    crash_time = match.group(2)
 
-            # 2. Process name (allow spaces)
             if not process_name:
-                m = (re.search(r"(Process|Executable|Application):\s+(.*)", line)
-                     or re.search(r"Process Name:\s+(.+)", line)
-                     or re.search(r"Command:\s+(.*)", line))
-                if m and len(m.groups()) >= 2:
-                    process_name = m.group(2).strip()
+                match = re.search(r"(Process|Executable|Application):\s+(.+)", line)
+                if match:
+                    process_name = match.group(2)
 
-            # 3. Exception type
             if not exception_type:
-                m = (re.search(r"(Exception Type|Fault Type|Error Type):\s+(.+)", line)
-                     or re.search(r"Error Code:\s+(.+)", line)
-                     or re.search(r"Signal:\s+(.+)", line))
-                if m and len(m.groups()) >= 2:
-                    exception_type = m.group(2).strip()
+                match = re.search(r"(Exception Type|Fault Type|Error Type):\s+(.+)", line)
+                if match:
+                    exception_type = match.group(2)
 
-            # 4. Termination reason
             if not termination_reason:
-                m = (re.search(r"(Termination Reason|Cause|Reason):\s+(.+)", line)
-                     or re.search(r"Exit Reason:\s+(.+)", line)
-                     or re.search(r"Crash Reason:\s+(.+)", line))
-                if m and len(m.groups()) >= 2:
-                    termination_reason = m.group(2).strip()
+                match = re.search(r"(Termination Reason|Cause|Reason):\s+(.+)", line)
+                if match:
+                    termination_reason = match.group(2)
 
         return {
             "crash_time": crash_time if crash_time else "Unknown",
             "process_name": process_name if process_name else "Unknown",
             "exception_type": exception_type if exception_type else "Unknown",
             "termination_reason": termination_reason if termination_reason else "Unknown",
-            "file_path": file_path
+            "file_path": file_path,
+            "log_content": log_content
         }
 
     except Exception as e:
@@ -201,7 +206,8 @@ def parse_crash_log(file_path, verbose=False):
             "process_name": "Error",
             "exception_type": str(e),
             "termination_reason": "Error",
-            "file_path": file_path
+            "file_path": file_path,
+            "log_content": "Error loading log"
         }
 
 def store_crash_logs(db_path, logs):
@@ -225,6 +231,7 @@ def store_crash_logs(db_path, logs):
                     log["exception_type"],
                     log.get("termination_reason", "Unknown"),
                     log["file_path"],
+                    log["log_content"]
                 )
             )
             new_logs.append(log)
